@@ -106,7 +106,8 @@ def nccombine(verbose, print_mem_usage, force, append_nc, remove_input,
     if not input_filenames:
         # TODO: This is a quick version
         input_filenames = [f for f in os.listdir(os.curdir)
-                           if f.startswith(output_filename + '.')]
+                           if f.startswith(output_filename + '.')
+                           and f.split('.')[-1].isdigit()]
 
     #=============================
 
@@ -115,8 +116,18 @@ def nccombine(verbose, print_mem_usage, force, append_nc, remove_input,
     header_nc = nc.Dataset(header_fname, 'r')
 
     # Construct composite dimensions
-    header_dims = (v for v in header_nc.variables if v in header_nc.dimensions)
+    # NOTE: Assumes all dims have identically named variables!
+    #       (I think that's how mppnccombine does it)
+    header_dims = [v for v in header_nc.variables if v in header_nc.dimensions]
 
+    split_dims = [v for v in header_dims
+                  if hasattr(header_nc.variables[v], 'domain_decomposition')]
+
+    split_vars = [v for v in header_nc.variables
+                  if any(d in split_dims
+                         for d in header_nc.variables[v].dimensions)]
+
+    # Create dimensions
     for v_name in header_dims:
         v_nc = header_nc.variables[v_name]
         d_nc = header_nc.dimensions[v_name]
@@ -130,31 +141,75 @@ def nccombine(verbose, print_mem_usage, force, append_nc, remove_input,
         else:
             output_nc.createDimension(v_name, len(d_nc))
 
+    # Create variables and copy if contiguous
+    for v_name in header_nc.variables:
+
+        v_nc = header_nc.variables[v_name]
+        vo_nc = output_nc.createVariable(v_name, v_nc.dtype, v_nc.dimensions)
+
+        # Copy variable attributes
+        for attr in v_nc.ncattrs():
+            if attr == 'domain_decomposition':
+                pass
+            else:
+                vo_nc.setncattr(attr, v_nc.getncattr(attr))
+
+        # Copy header file contents to output_nc
+        v_idx = {}
+        for d_name in v_nc.dimensions:
+            # NOTE: Assumes each dim has an equivalently named variable
+            d_var_nc = header_nc.variables[d_name]
+            try:
+                i_s, i_e = d_var_nc.domain_decomposition[2:4]
+            except AttributeError:
+                i_s, i_e = 1, len(header_nc.dimensions[d_name])
+
+            v_idx[d_name] = (i_s, i_e)
+
+        v_slice = [slice(v_idx[d][0] - 1, v_idx[d][1])
+                   for d in v_nc.dimensions]
+        vo_nc[v_slice] = v_nc[:]
+
     # Copy global attributes
-    for attr in header_nc.ncattrs(): 
+    for attr in header_nc.ncattrs():
         if attr == 'filename':
             attr_val = output_filename
+        elif attr == 'NumFilesInSet':
+            pass
         else:
             attr_val = header_nc.getncattr(attr)
         output_nc.setncattr(attr, attr_val)
 
     header_nc.close()
  
-    # Gather the tile domain index bounds
-    # TODO: Skip first entry?
+    # Copy the partitioned content of the other files
+    for input_fname in input_filenames[1:]:
 
-    var_bounds = {}
-    for input_fname in input_filenames:
         input_nc = nc.Dataset(input_fname, 'r')
 
-        input_var_bnds = {}
-        for v in split_dims:
-            bnds = input_nc.variables[v].domain_decomposition.tolist()
-            input_var_bnds[v] = bnds
+        for v_name in split_vars:
+            v_nc = input_nc.variables[v_name]
+            vo_nc = output_nc.variables[v_name]
 
-        var_bounds[input_fname] = input_var_bnds
+            # Copy header file contents to output_nc
+            v_idx = {}
+            for d_name in v_nc.dimensions:
+                # NOTE: Assumes each dim has an equivalently named variable
+                d_var_nc = input_nc.variables[d_name]
+                try:
+                    i_s, i_e = d_var_nc.domain_decomposition[2:4]
+                except AttributeError:
+                    i_s, i_e = 1, len(input_nc.dimensions[d_name])
+
+                v_idx[d_name] = (i_s, i_e)
+
+            v_slice = [slice(v_idx[d][0] - 1, v_idx[d][1])
+                       for d in v_nc.dimensions]
+            vo_nc[v_slice] = v_nc[:]
+
         input_nc.close()
 
+    output_nc.close()
     #============================
 
     return 0
