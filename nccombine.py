@@ -148,11 +148,9 @@ def nccombine(verbose, print_mem_usage, force, append_nc, remove_input,
         vo_nc = output_nc.createVariable(v_name, v_nc.dtype, v_nc.dimensions)
 
         # Copy variable attributes
-        for attr in v_nc.ncattrs():
-            if attr == 'domain_decomposition':
-                pass
-            else:
-                vo_nc.setncattr(attr, v_nc.getncattr(attr))
+        v_attrs = {attr: v_nc.getncattr(attr) for attr in v_nc.ncattrs()
+                         if not attr == 'domain_decomposition'}
+        vo_nc.setncatts(v_attrs)
 
         # Copy header file contents to output_nc
         v_idx = {}
@@ -171,14 +169,10 @@ def nccombine(verbose, print_mem_usage, force, append_nc, remove_input,
         vo_nc[v_slice] = v_nc[:]
 
     # Copy global attributes
-    for attr in header_nc.ncattrs():
-        if attr == 'filename':
-            attr_val = output_filename
-        elif attr == 'NumFilesInSet':
-            pass
-        else:
-            attr_val = header_nc.getncattr(attr)
-        output_nc.setncattr(attr, attr_val)
+    attrs = {attr: header_nc.getncattr(attr) for attr in header_nc.ncattrs()
+                   if not attr == 'NumFilesInSet'}
+    attrs['filename'] = output_filename
+    output_nc.setncatts(attrs)
 
     header_nc.close()
  
